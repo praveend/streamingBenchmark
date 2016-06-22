@@ -52,6 +52,9 @@ data.kafka.Loader.thread: #kafkaLoaderThread#
 data.kafka.Loader.thread.recordLimit: #kafkaLoaderThreadLimit#
 data.kafka.inputFile: "/tmp/data/tweet_dataset"
 
+hdfs.host: "hdfs://169.45.101.78:9000"
+hdfs.tmpDir: "hdfs://10.168.102.170:9000/user/streamdir"
+
 #100,000,000
 #round,threads,recordLimit
 #1 5 20,000,000

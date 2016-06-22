@@ -190,7 +190,9 @@ fi
 
 echo "" ;echo "" ;echo "**********launch push to kafka operation**********"
 echo "pssh -h ${kafkaHostFile} -i nohup java -cp ${pushToKafkaJar}  benchmark.common.kafkaPush.PushToKafka ${confFile} > pushToKafka_${processId}.log 2>&1 &"
-pssh -h ${kafkaHostFile} -i "nohup java -cp ${pushToKafkaJar}  benchmark.common.kafkaPush.PushToKafka ${confFile} > ~/pushToKafka_${processId}.log 2>&1 &"
+#pssh -h ${kafkaHostFile} -i "nohup java -cp ${pushToKafkaJar}  benchmark.common.kafkaPush.PushToKafka ${confFile} > ~/pushToKafka_${processId}.log 2>&1 &" #Run hadoop dump just on the driver
+nohup java -cp ${pushToKafkaJar}  benchmark.common.kafkaPush.PushToKafka ${confFile} > ~/pushToKafka_${processId}.log 2>&1 &
+
 if [ "$?" = "0" ]; then
 	echo "Success!!"
 else
@@ -200,14 +202,14 @@ fi
 
 sleep 10s
 
-echo "" ;echo "" ;echo "**********validating push to kafka operation**********"
-tailString=`pssh -h ${kafkaHostFile} -i "cat ~/pushToKafka_${processId}.log |tail -100"`
-if [[ ${tailString} == *"Exception"* ]]; then
-  echo "failed!!"
-	exit -1
-else
-	echo "Success!!"
-fi
+#echo "" ;echo "" ;echo "**********validating push to kafka operation**********"
+#tailString=`pssh -h ${kafkaHostFile} -i "cat ~/pushToKafka_${processId}.log |tail -100"`
+#if [[ ${tailString} == *"Exception"* ]]; then
+#  echo "failed!!"
+#	exit -1
+#else
+#	echo "Success!!"
+#fi
 
 }
 
