@@ -1,18 +1,28 @@
 package benchmark.common.kafkaPush
 
 
+import java.io.{OutputStream, InputStream, BufferedInputStream, FileInputStream}
+import java.net.URI
 import java.util.Properties
 
 import benchmark.common.Utils
 import com.google.gson.JsonParser
-import kafka.producer.{KeyedMessage, Producer, ProducerConfig}
+//import kafka.producer.{KeyedMessage, Producer, ProducerConfig}
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.io.IOUtils
+
+import scala.collection.mutable.ListBuffer
+
+//import kafka.producer.{KeyedMessage, Producer, ProducerConfig}//praveen
 
 import scala.collection.JavaConverters._
 import scala.io.Source
 
 /**
- * Created by sachin on 2/18/16.
- */
+  * Created by sachin on 2/18/16.
+  */
 
 object PushToKafka {
   def main(args: Array[String]) {
@@ -56,6 +66,16 @@ object PushToKafka {
       case other => throw new ClassCastException(other + " not a Number")
     }
 
+    val hadoopHost = commonConfig.get("hdfs.host") match {
+      case s: String => s
+      case other => throw new ClassCastException(other + " not a String")
+    }
+
+    val hadoopTmpDir = commonConfig.get("hdfs.tmpDir") match {
+      case s: String => s
+      case other => throw new ClassCastException(other + " not a String")
+    }
+
     val brokerListString = new StringBuilder();
 
     for (host <- kafkaBrokers) {
@@ -71,7 +91,7 @@ object PushToKafka {
     props.put("serializer.class", serializer)
     props.put("request.required.acks", requiredAcks)
 
-    val config: ProducerConfig = new ProducerConfig(props)
+    //val config: ProducerConfig = new ProducerConfig(props) //praveen
     //    val producer: Producer[String, String] = new Producer[String, String](config)
     //    val r = scala.util.Random
     var thread: Array[Thread] = new Array[Thread](loaderThreads + 1)
@@ -80,13 +100,17 @@ object PushToKafka {
       thread(i) = new Thread {
         override def run {
 
+          //HDFS configuration
+          val configuration:Configuration  = new Configuration()
+          val hdfs:FileSystem = FileSystem.get(new URI(hadoopHost), configuration); //"hdfs://169.45.101.78:9000"
+
           val threadId: Long = Thread.currentThread().getId();
-          val producer: Producer[String, String] = new Producer[String, String](config)
+          //val producer: Producer[String, String] = new Producer[String, String](config) //praveen
           val r = scala.util.Random
           var count: Long = 0
           val bufferedSource = Source.fromFile(inputFile)
           //val line = bufferedSource.getLines
-         // val jsonParser=new JsonParser();
+          // val jsonParser=new JsonParser();
 
           val printThread = new Thread() {
             var prevCount:Long=0
@@ -101,29 +125,56 @@ object PushToKafka {
           printThread.start()
           val startTime = java.lang.System.currentTimeMillis()
           println("threadId:"+threadId+", StartTime:"+ startTime)
-//            for (i<-1L to recordLimitPerThread){
-//              val text = jsonParser.parse(line.next()).getAsJsonObject().get("text")
-//              val id = r.nextInt(kafkaPartitions)
-//              val data: KeyedMessage[String, String] = new KeyedMessage[String, String](topic, id.toString, text.toString)
-//              producer.send(data)
-//              count=i;
-//            }
-          bufferedSource.getLines.foreach(line => {
-            if (count <= recordLimitPerThread+10000) {
-              val text = new JsonParser().parse(line).getAsJsonObject().get("text")
-              val id = r.nextInt(kafkaPartitions)
-              val data: KeyedMessage[String, String] = new KeyedMessage[String, String](topic, id.toString, id.toString, text.toString)
-            //println(id)
-              producer.send(data)
-            }else{
-              bufferedSource.close
-            }
-            count += 1
-          })
+          //            for (i<-1L to recordLimitPerThread){
+          //              val text = jsonParser.parse(line.next()).getAsJsonObject().get("text")
+          //              val id = r.nextInt(kafkaPartitions)
+          //              val data: KeyedMessage[String, String] = new KeyedMessage[String, String](topic, id.toString, text.toString)
+          //              producer.send(data)
+          //              count=i;
+          //            }
+          var textBuffer = new ListBuffer[String]()
+          var tmpFileNames = new ListBuffer[String]()
+          var lastFlushTime = System.currentTimeMillis()
+          var lastDeleteTime = System.currentTimeMillis()
+
+          try {
+            bufferedSource.getLines.foreach(line => {
+              if (count <= recordLimitPerThread+10000) {
+                val text = new JsonParser().parse(line).getAsJsonObject().get("text")
+                //val id = r.nextInt(kafkaPartitions) //Praveen
+                textBuffer += text.toString
+
+                if(System.currentTimeMillis() > (lastFlushTime + 50)) { //Flush to new file every 50 ms
+                val fileName = i + "_" + lastFlushTime.toString + ".txt"
+                  tmpFileNames += fileName
+                  FlushFileToHDFS(hdfs,textBuffer,hadoopTmpDir,fileName)
+                  lastFlushTime = System.currentTimeMillis()
+                  textBuffer.clear()
+                }
+
+                if(System.currentTimeMillis() > lastDeleteTime + 60000) { //Delete tmp files every minute
+                  deleteTmpFiles(hdfs,tmpFileNames,hadoopTmpDir)
+                  tmpFileNames.clear()
+                  lastDeleteTime = System.currentTimeMillis()
+                }
+                //val data: KeyedMessage[String, String] = new KeyedMessage[String, String](topic, id.toString, id.toString, text.toString) //praveen
+                //println(id)
+                //producer.send(data) //praveen
+              }else{
+                bufferedSource.close
+              }
+              count += 1
+            })
+          } catch {
+            case exc:Exception => println("") //Ignore exception. Stream will be closed on reaching record limit per thread.
+          }
+
+          deleteTmpFiles(hdfs,tmpFileNames,hadoopTmpDir) //Delete left out tmp files
+
           val endTime=java.lang.System.currentTimeMillis()
           println("EndTime:"+endTime)
           println("Time taken by job:"+(endTime-startTime))
-          producer.close()
+          //producer.close() //praveen
         }
       }
 
@@ -131,6 +182,23 @@ object PushToKafka {
     }
     for (i <- 1 to loaderThreads) {
       thread(i).join();
+    }
+  }
+
+  def deleteTmpFiles(hdfs:FileSystem,tmpFileNames:ListBuffer[String], hadoopTmpDir:String) : Unit = {
+    tmpFileNames.foreach(fileName => hdfs.delete(new Path(hadoopTmpDir + "/" + fileName),true))
+  }
+
+  def FlushFileToHDFS(hdfs:FileSystem,textBuffer:ListBuffer[String],hadoopTmpDir:String,fileName:String): Unit = {
+    val outputStream:OutputStream = hdfs.create(new Path(hadoopTmpDir + "/" + fileName));
+    try
+    {
+      //IOUtils.copyBytes(inputStream, outputStream, 4096, false);
+      textBuffer.foreach(str => outputStream.write(str.getBytes))
+    }
+    finally
+    {
+      IOUtils.closeStream(outputStream)
     }
   }
 }
